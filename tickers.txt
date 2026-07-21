@@ -1,0 +1,7 @@
+# List of stock tickers to track — one per line.
+# Lines starting with # are comments and are ignored, as are blank lines.
+# Case doesn't matter (they're uppercased automatically).
+
+AAPL
+TSLA
+NVDA

@@ -1,0 +1,17 @@
+# Secrets — never commit these
+.env
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Note: seen_articles.json is intentionally NOT ignored.
+# The GitHub Actions workflow commits it back after every run so the
+# dedup cache survives between runs (Actions runners are ephemeral).
+# If you only ever run this locally/via your own cron (not Actions),
+# feel free to add seen_articles.json back to this file.
