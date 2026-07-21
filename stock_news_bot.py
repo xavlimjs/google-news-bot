@@ -11,7 +11,8 @@ Designed to be run on a schedule (cron), e.g. every 30 minutes. Each run:
   2. Keeps only articles published within the lookback window (default: 1 day)
   3. Filters out articles already seen (tracked in seen_articles.json)
   4. Groups any new articles by ticker and sends ONE consolidated Telegram
-     message per ticker (title + URL for each article)
+     message per ticker (title + URL for each article). If a ticker has
+     no new articles, sends a short "no new articles" notice instead.
   5. Updates the seen-articles cache
 
 Tickers to track are read from tickers.txt (one per line) — see that file.
@@ -233,6 +234,9 @@ def main():
                 time.sleep(1)  # be gentle on Telegram's rate limits
             total_sent += len(new_entries_for_ticker)
             tickers_with_news += 1
+        else:
+            send_telegram_message(f"📭 *{ticker}* — no new articles")
+            time.sleep(1)  # be gentle on Telegram's rate limits
 
     save_seen(new_seen)
     print(
