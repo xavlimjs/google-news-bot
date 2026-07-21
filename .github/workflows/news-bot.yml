@@ -2,9 +2,11 @@ name: Stock News Bot
 
 on:
   schedule:
-    # Every 30 minutes. GitHub may delay scheduled runs slightly under load —
-    # that's expected and harmless for this use case.
-    - cron: "*/30 * * * *"
+    # Runs at :03 and :33 rather than exactly :00/:30 — those exact marks
+    # are the most heavily used cron times across all of GitHub, so
+    # offsetting by a few minutes avoids queueing delays during busy
+    # periods (this is GitHub's own documented recommendation).
+    - cron: "3,33 * * * *"
   workflow_dispatch: {}  # lets you trigger a run manually from the Actions tab
 
 permissions:
