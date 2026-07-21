@@ -2,15 +2,11 @@ name: Stock News Bot
 
 on:
   schedule:
-    # Runs at :03 and :33 rather than exactly :00/:30 — those exact marks
-    # are the most heavily used cron times across all of GitHub, so
-    # offsetting by a few minutes avoids queueing delays during busy
-    # periods (this is GitHub's own documented recommendation).
     - cron: "3,33 * * * *"
-  workflow_dispatch: {}  # lets you trigger a run manually from the Actions tab
+  workflow_dispatch: {}
 
 permissions:
-  contents: write  # needed to commit the updated seen_articles.json back
+  contents: write
 
 jobs:
   run-bot:
