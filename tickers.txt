@@ -2,6 +2,7 @@
 # Lines starting with # are comments and are ignored, as are blank lines.
 # Case doesn't matter (they're uppercased automatically).
 
-AAPL
-TSLA
-NVDA
+COHR
+GRRR
+AMZN
+NFLX
