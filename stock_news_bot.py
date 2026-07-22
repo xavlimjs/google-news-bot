@@ -14,7 +14,8 @@ Designed to be run on a schedule (cron), e.g. every 30 minutes. Each run:
   4. Groups any new articles by ticker and sends ONE consolidated Telegram
      message per ticker (title + URL for each article). If a ticker has
      no new articles, sends a short "no new articles" notice instead.
-  5. Updates the seen-articles cache
+  5. Updates the seen-articles cache, auto-pruning any entries older
+     than PRUNE_AFTER_DAYS so it never needs manual clearing
 
 Tickers to track are read from tickers.txt (one per line) — see that file.
 
@@ -61,6 +62,13 @@ FETCH_LIMIT_PER_TICKER = 50
 # message would exceed this, it gets split into multiple parts instead of
 # failing to send. This is set with a safety margin below the hard limit.
 MAX_MESSAGE_LENGTH = 4000
+
+# Article IDs are auto-pruned from the dedup cache once they're older than
+# this many days. Keeps the cache small indefinitely without ever needing
+# to clear it by hand. Should stay comfortably larger than LOOKBACK_HOURS
+# (converted to days) so nothing gets pruned before it's even had a chance
+# to be deduped against.
+PRUNE_AFTER_DAYS = 3
 
 # Where dedup state is stored locally (only used as a fallback — see
 # GIST_ID/GIST_TOKEN below for the primary storage method)
@@ -126,7 +134,40 @@ def _gist_headers() -> dict:
     }
 
 
-def load_seen() -> set:
+def _prune_seen(seen: dict) -> dict:
+    """Drops any article ID whose recorded timestamp is older than
+    PRUNE_AFTER_DAYS. Keeps the cache size bounded automatically, based on
+    age rather than a raw count."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=PRUNE_AFTER_DAYS)
+    pruned = {}
+    for aid, ts_str in seen.items():
+        try:
+            ts = datetime.fromisoformat(ts_str)
+        except (ValueError, TypeError):
+            # Malformed/unknown timestamp — keep it rather than risk
+            # dropping something that should still be deduped.
+            pruned[aid] = ts_str
+            continue
+        if ts >= cutoff:
+            pruned[aid] = ts_str
+    return pruned
+
+
+def _normalize_seen(raw) -> dict:
+    """Accepts either the current dict format ({id: timestamp}) or the
+    older flat-list format (["id1", "id2", ...]) and returns a dict.
+    Legacy list entries get "now" as their timestamp, since we don't know
+    when they were actually first seen — they'll age out normally from
+    here on."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        now_iso = datetime.now(timezone.utc).isoformat()
+        return {aid: now_iso for aid in raw}
+    return {}
+
+
+def load_seen() -> dict:
     if GIST_ID and GIST_TOKEN:
         try:
             resp = requests.get(
@@ -137,24 +178,23 @@ def load_seen() -> set:
             resp.raise_for_status()
             gist_data = resp.json()
             content = gist_data["files"][GIST_FILENAME]["content"]
-            return set(json.loads(content))
+            return _normalize_seen(json.loads(content))
         except Exception as e:
             print(f"[ERROR] Failed to load seen-articles from Gist: {e}")
-            return set()
+            return {}
 
     # Local file fallback (used when GIST_ID/GIST_TOKEN aren't set)
     if SEEN_FILE.exists():
         try:
-            return set(json.loads(SEEN_FILE.read_text()))
+            return _normalize_seen(json.loads(SEEN_FILE.read_text()))
         except (json.JSONDecodeError, OSError):
-            return set()
-    return set()
+            return {}
+    return {}
 
 
-def save_seen(seen: set):
-    # Keep the cache from growing forever — cap at the most recent 5000 ids
-    trimmed = list(seen)[-5000:]
-    content = json.dumps(trimmed)
+def save_seen(seen: dict):
+    pruned = _prune_seen(seen)
+    content = json.dumps(pruned)
 
     if GIST_ID and GIST_TOKEN:
         try:
@@ -259,7 +299,8 @@ def main():
         return
 
     seen = load_seen()
-    new_seen = set(seen)
+    new_seen = dict(seen)
+    now_iso = datetime.now(timezone.utc).isoformat()
     total_sent = 0
     total_out_of_window = 0
     tickers_with_news = 0
@@ -282,7 +323,7 @@ def main():
             if aid in seen:
                 continue
 
-            new_seen.add(aid)
+            new_seen[aid] = now_iso
             new_entries_for_ticker.append(entry)
 
         if new_entries_for_ticker:
