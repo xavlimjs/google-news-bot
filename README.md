@@ -1,8 +1,7 @@
 # Stock News Bot
 
-Pulls the latest news per stock ticker from Google News RSS, filters by
-keyword, and sends new matching articles to a Telegram chat. Meant to run
-on a schedule (cron).
+Pulls the latest news per stock ticker from Google News RSS and sends new
+articles to a Telegram chat. Meant to run on a schedule.
 
 ## 1. Install dependencies
 
@@ -106,19 +105,34 @@ Or, if you exported the env vars in your shell profile already, you can
 omit them from the cron line — but note cron runs with a minimal
 environment, so it's often safer to set them inline as shown above.
 
-## 8. Run it 24/7 with GitHub Actions (recommended for "set and forget")
+## 8. Run it 24/7 with GitHub Actions + cron-job.org (recommended)
 
-Instead of your own machine's cron, you can let GitHub run this on a
-schedule for free. Steps:
+This is the "set and forget" setup: GitHub Actions runs the bot, an
+external scheduler (cron-job.org) triggers it reliably, and a GitHub Gist
+stores the dedup cache so it survives between runs without ever needing
+a git commit.
 
-1. **Create the repo.** On GitHub, create a new repository named
-   `google-news-bot` (public is recommended — public repos get unlimited
-   free Actions minutes; private repos get 2,000 free minutes/month,
-   which is far more than this bot needs either way).
+**Why not GitHub's own `schedule:` trigger?** It technically works, but
+in practice its timing can be very unreliable — ticks are sometimes
+delayed by hours or dropped entirely under load. cron-job.org calling
+the workflow directly (via the same mechanism as clicking "Run workflow"
+manually) has proven far more consistent.
 
-2. **Push this project to it:**
+**Why not commit `seen_articles.json` back to the repo?** That was the
+original approach, but it caused a merge conflict almost every time you
+tried to push a local change, since the workflow and your local machine
+were both racing to update the same file on `main`. Storing it in a
+Gist instead means the repo's git history is untouched by the bot.
+
+### 8a. Create the repo
+
+1. On GitHub, create a new repository named `google-news-bot` (public is
+   recommended — public repos get unlimited free Actions minutes;
+   private repos get 2,000 free minutes/month, far more than this bot
+   needs either way)
+2. Push this project to it:
    ```bash
-   cd google-news-bot   # the folder containing these files
+   cd google-news-bot
    git init
    git add .
    git commit -m "Initial commit"
@@ -126,51 +140,95 @@ schedule for free. Steps:
    git remote add origin https://github.com/<your-username>/google-news-bot.git
    git push -u origin main
    ```
-   `.env` will NOT be pushed (it's in `.gitignore`) — good, since Actions
-   uses GitHub Secrets instead (next step).
 
-3. **Add your credentials as repo secrets**, not a `.env` file:
-   - Go to the repo's **Settings → Secrets and variables → Actions**
-   - Click **New repository secret**, add:
-     - `TELEGRAM_BOT_TOKEN`
-     - `TELEGRAM_CHAT_ID`
+### 8b. Create a Gist for the dedup cache
 
-4. **That's it.** The workflow at
-   `.github/workflows/news-bot.yml` is already set up to:
-   - Run every 30 minutes (`schedule: cron: "*/30 * * * *"`)
-   - Also let you trigger it manually anytime from the repo's **Actions**
-     tab (`workflow_dispatch`)
-   - Install dependencies, run the bot, and commit the updated
-     `seen_articles.json` back to the repo so dedup state survives
-     between runs (each Actions run starts from a clean, throwaway
-     machine — nothing else persists automatically)
+1. Go to **gist.github.com** → create a **new Gist**
+2. Filename: `seen_articles.json`
+3. Content: `[]`
+4. Choose **secret** or **public** (doesn't matter — it only ever
+   contains hashed article IDs, nothing sensitive) → **Create gist**
+5. Copy the **Gist ID** from the URL — it's the string of letters/numbers
+   after your username, e.g. `gist.github.com/<username>/`**`a1b2c3d4e5f6...`**
 
-5. **Check it worked:** go to the **Actions** tab in your repo — you
-   should see "Stock News Bot" runs appearing every 30 minutes, and a
-   small automated commit updating `seen_articles.json` after each run
-   that finds new articles.
+### 8c. Create a GitHub token for Gist access
+
+1. Go to **github.com/settings/tokens** → **Tokens (classic)** →
+   **Generate new token (classic)**
+2. Give it a name, set an expiration you're comfortable with
+3. Under scopes, check only **`gist`** — nothing else needed
+4. Generate, and copy the token immediately (shown once)
+
+### 8d. Add repo secrets
+
+Repo → **Settings → Secrets and variables → Actions → New repository
+secret**. Add all four:
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `GIST_ID` — from step 8b
+- `GIST_TOKEN` — from step 8c
+
+### 8e. Confirm the workflow is set up correctly
+
+`.github/workflows/news-bot.yml` should only have `workflow_dispatch: {}`
+as its trigger (no `schedule:` block) — the external scheduler in the
+next step handles timing instead.
+
+### 8f. Set up cron-job.org as the scheduler
+
+You'll need a second Personal Access Token for this one — **fine-grained**
+this time, scoped to just this repo with **Actions: Read and write**
+permission (github.com/settings/tokens → "Fine-grained tokens" →
+generate, select the repo, set Actions permission to Read and write).
+
+1. Create a free account at **cron-job.org**
+2. Create a new cron job:
+   - **URL**: `https://api.github.com/repos/<your-username>/google-news-bot/actions/workflows/news-bot.yml/dispatches`
+   - **Request method**: `POST`
+   - **Headers**:
+     - `Authorization: Bearer <your fine-grained token>`
+     - `Accept: application/vnd.github+json`
+     - `X-GitHub-Api-Version: 2022-11-28`
+     - `Content-Type: application/json`
+   - **Request body**: `{"ref":"main"}`
+   - **Schedule**: minutes 3 and 33 of every hour (avoids the
+     `:00`/`:30` marks, which are the most congested times across all of
+     GitHub's shared runners)
+3. Save and enable the job
+
+### 8g. Verify
+
+- Check cron-job.org's execution history after the next `:03`/`:33` —
+  should show a success status
+- Check the repo's **Actions** tab — a new run should appear at that
+  same time, labeled as triggered via the API rather than "Scheduled"
+- Check your Telegram chat for messages
 
 **Notes:**
-- GitHub's scheduled triggers aren't guaranteed to fire at the exact
-  minute — under load they can be a few minutes late. Harmless here.
-- If you ever want to pause it, disable the workflow from the Actions
-  tab rather than deleting the file.
-- To change tickers or config, just edit `tickers.txt` or
-  `stock_news_bot.py` and push — no redeploy step needed, the next
-  scheduled run picks up the change automatically.
+- If you ever want to pause the bot, disable the workflow from the
+  Actions tab — this blocks the API trigger too, so cron-job.org's calls
+  will fail harmlessly (visible as an error in its execution history)
+  until you re-enable it.
+- To change tickers or config, edit `tickers.txt` or `stock_news_bot.py`
+  locally and push — no redeploy step needed, the next triggered run
+  picks up the change automatically.
+- The two tokens (Gist token and Actions-trigger token) have expiration
+  dates you set yourself — put a reminder in your calendar to rotate
+  them before they lapse, since an expired token fails silently until
+  you notice messages have stopped.
 
 ## Files
 
 - `stock_news_bot.py` — the bot itself
 - `tickers.txt` — list of tickers to track, one per line
 - `requirements.txt` — Python dependencies
-- `.env.example` — template for credentials; copy to `.env` and fill in
-- `.env` — your actual credentials (created by you; never committed)
-- `.gitignore` — keeps `.env` and runtime files out of git
-- `.github/workflows/news-bot.yml` — GitHub Actions workflow that runs
-  the bot every 30 minutes (see "Run it 24/7 with GitHub Actions" above)
-- `seen_articles.json` — tracks which articles have already been sent.
-  Created empty; updated automatically each run (and committed back by
-  the GitHub Actions workflow if you use that route). Safe to delete/
-  empty (`[]`) if you want a fresh start, but you'll get a burst of "new"
-  articles again.
+- `.env.example` — template for local credentials; copy to `.env` and fill in
+- `.env` — your actual local credentials (created by you; never committed)
+- `.gitignore` — keeps `.env`, `seen_articles.json`, and other runtime
+  files out of git
+- `.github/workflows/news-bot.yml` — GitHub Actions workflow, triggered
+  via `workflow_dispatch` (see "Run it 24/7" above)
+- `seen_articles.json` — **local-only fallback** dedup cache, used only
+  when `GIST_ID`/`GIST_TOKEN` aren't set (e.g. testing locally). When
+  running via GitHub Actions with a Gist configured, this file isn't
+  used at all — the cache lives in the Gist instead.

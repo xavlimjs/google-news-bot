@@ -9,7 +9,8 @@ and sends new articles to a Telegram chat.
 Designed to be run on a schedule (cron), e.g. every 30 minutes. Each run:
   1. Fetches the RSS feed for each ticker
   2. Keeps only articles published within the lookback window (default: 1 day)
-  3. Filters out articles already seen (tracked in seen_articles.json)
+  3. Filters out articles already seen (tracked via a GitHub Gist, or a
+     local seen_articles.json file as a fallback)
   4. Groups any new articles by ticker and sends ONE consolidated Telegram
      message per ticker (title + URL for each article). If a ticker has
      no new articles, sends a short "no new articles" notice instead.
@@ -61,8 +62,24 @@ FETCH_LIMIT_PER_TICKER = 50
 # failing to send. This is set with a safety margin below the hard limit.
 MAX_MESSAGE_LENGTH = 4000
 
-# Where dedup state is stored (created automatically)
+# Where dedup state is stored locally (only used as a fallback — see
+# GIST_ID/GIST_TOKEN below for the primary storage method)
 SEEN_FILE = Path(__file__).parent / "seen_articles.json"
+
+# --- Dedup cache storage: GitHub Gist (recommended for GitHub Actions) -----
+# If both of these are set, seen-article IDs are read/written to a GitHub
+# Gist instead of a local file. This avoids the local file ever needing to
+# be committed back to the repo, which is what caused repeated merge
+# conflicts when running via GitHub Actions.
+# - GIST_ID: the ID of a Gist you create yourself, containing a file named
+#   exactly "seen_articles.json" with initial content "[]"
+# - GIST_TOKEN: a GitHub Personal Access Token (classic) with only the
+#   "gist" scope
+# If either is unset, the bot falls back to the local SEEN_FILE above —
+# useful for local testing without needing Gist credentials.
+GIST_ID = os.environ.get("GIST_ID", "")
+GIST_TOKEN = os.environ.get("GIST_TOKEN", "")
+GIST_FILENAME = "seen_articles.json"
 
 # ---------------------------------------------------------------------------
 # CORE LOGIC — shouldn't need to touch this
@@ -101,7 +118,31 @@ def article_id(entry) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
+def _gist_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {GIST_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
 def load_seen() -> set:
+    if GIST_ID and GIST_TOKEN:
+        try:
+            resp = requests.get(
+                f"https://api.github.com/gists/{GIST_ID}",
+                headers=_gist_headers(),
+                timeout=15,
+            )
+            resp.raise_for_status()
+            gist_data = resp.json()
+            content = gist_data["files"][GIST_FILENAME]["content"]
+            return set(json.loads(content))
+        except Exception as e:
+            print(f"[ERROR] Failed to load seen-articles from Gist: {e}")
+            return set()
+
+    # Local file fallback (used when GIST_ID/GIST_TOKEN aren't set)
     if SEEN_FILE.exists():
         try:
             return set(json.loads(SEEN_FILE.read_text()))
@@ -111,9 +152,26 @@ def load_seen() -> set:
 
 
 def save_seen(seen: set):
-    # Keep the file from growing forever — cap at the most recent 5000 ids
+    # Keep the cache from growing forever — cap at the most recent 5000 ids
     trimmed = list(seen)[-5000:]
-    SEEN_FILE.write_text(json.dumps(trimmed))
+    content = json.dumps(trimmed)
+
+    if GIST_ID and GIST_TOKEN:
+        try:
+            payload = {"files": {GIST_FILENAME: {"content": content}}}
+            resp = requests.patch(
+                f"https://api.github.com/gists/{GIST_ID}",
+                headers=_gist_headers(),
+                json=payload,
+                timeout=15,
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            print(f"[ERROR] Failed to save seen-articles to Gist: {e}")
+        return
+
+    # Local file fallback
+    SEEN_FILE.write_text(content)
 
 
 def fetch_ticker_news(ticker: str):

@@ -3,9 +3,6 @@ name: Stock News Bot
 on:
   workflow_dispatch: {}
 
-permissions:
-  contents: write
-
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -25,12 +22,6 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: python stock_news_bot.py
-
-      - name: Commit updated seen-articles cache
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add seen_articles.json
-          git diff --staged --quiet || git commit -m "Update seen articles cache [skip ci]"
-          git push
